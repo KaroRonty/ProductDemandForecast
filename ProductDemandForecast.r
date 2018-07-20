@@ -60,12 +60,16 @@ stores_and_items <- stores_and_items %>%
          formula = NA) %>% 
   as_tibble()
 
-# Make regressions using test data
+# Make regressions using training data
+time <- Sys.time()
 for (i in 1:nrow(stores_and_items)){
   # Select one item from one store at a time
   temp <- train %>% 
     filter(store_nbr == stores_and_items[i, 1]$store_nbr,
            item_nbr == stores_and_items[i, 2]$item_nbr)
+  
+  # If not enough data, go to next
+  if(nrow(temp) == 0 || nrow(temp) == 1 ){next}
   
   # Do linear models for forecasting demand
   lm <- tryCatch(lm(unit_sales ~
@@ -75,7 +79,7 @@ for (i in 1:nrow(stores_and_items)){
                  error = function(x){lm <- NA} )
   
   # Skip stepwise selection and set forecast as mean sales if AIC is -infinite
-  if(AIC(lm) == -Inf){formula = sum(temp$unit_sales) /
+  if(is.na(lm) || AIC(lm) == -Inf){formula = sum(temp$unit_sales) /
     as.numeric(max(as.Date(temp$date)) - min(as.Date(temp$date)))
     stores_and_items[i, "formula"] <- formula
     next}
@@ -91,9 +95,12 @@ for (i in 1:nrow(stores_and_items)){
   stores_and_items[i, "r_squared_train"] <- summary(lm)$r.squared
   stores_and_items[i, "pvalue_train"] <- glance(lm)$p.value
   stores_and_items[i, "formula"] <- formula
-  
+  i_holder[i] <- i
 }
+Sys.time() - time
 
+time <- Sys.time()
+# Test the regression on test data
 for(i in 1:nrow(stores_and_items)){
   temp_predict <- test %>% 
     filter(store_nbr == stores_and_items[i, 1]$store_nbr,
@@ -117,19 +124,4 @@ for(i in 1:nrow(stores_and_items)){
     temp_predict$unit_sales, temp_predict$prediction)$p.value),
     error = function(x){stores_and_items[i, "r_squared_test"] <- NA})
 }
-  
-  
-  
-  
-  
-  
-  
-  
-
-
-
-
-
-
-
-
+Sys.time() - time

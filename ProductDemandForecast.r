@@ -19,7 +19,7 @@ stores_and_items <- train %>%
   group_by(store_nbr, item_nbr) %>% 
   summarise()
 
-# Amount of stores & products & their combinations
+# Amount of stores, products & their combinations
 length(unique(stores_and_items$store_nbr))
 length(unique(stores_and_items$item_nbr))
 nrow(stores_and_items)

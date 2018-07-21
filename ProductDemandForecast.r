@@ -10,7 +10,8 @@ holidays <- fread("holidays_events.csv")
 
 # Form training and test sets
 train <- sales %>%
-  arrange(date, store_nbr, item_nbr)
+  arrange(date, store_nbr, item_nbr) %>% 
+  head(3000000)
 test <- sales %>%
   arrange(date, store_nbr, item_nbr) %>%
   tail(939437)
@@ -74,19 +75,14 @@ for (i in 1:nrow(stores_and_items)) {
     )
 
   # If not enough data, go to next
-  if (nrow(temp) == 0 || nrow(temp) == 1) {
-    next
-  }
+  if (nrow(temp) == 0 || nrow(temp) == 1) {next}
 
   # Do linear models for forecasting demand
   lm <- tryCatch(lm(unit_sales ~
   onpromotion + transferred + local + regional + additional +
     bridge + event + holiday + transfer + workday + weekday,
-  data = temp
-  ),
-  error = function(x) {
-    lm <- NA
-  })
+  data = temp),
+  error = function(x) {lm <- NA})
 
   # Skip stepwise selection and set forecast as mean sales if AIC is -infinite
   if (is.na(lm) || AIC(lm) == -Inf) {
@@ -133,17 +129,11 @@ for (i in 1:nrow(stores_and_items)) {
 
   # Calculate the r^2 and p-value for the test set
   stores_and_items[i, "r_squared_test"] <- tryCatch(unname(cor.test(
-    temp_predict$unit_sales, temp_predict$prediction
-  )$estimate)^2,
-  error = function(x) {
-    stores_and_items[i, "r_squared_test"] <- NA
-  })
+    temp_predict$unit_sales, temp_predict$prediction)$estimate)^2,
+  error = function(x) {stores_and_items[i, "r_squared_test"] <- NA})
 
   stores_and_items[i, "pvalue_test"] <- tryCatch(unname(cor.test(
-    temp_predict$unit_sales, temp_predict$prediction
-  )$p.value),
-  error = function(x) {
-    stores_and_items[i, "r_squared_test"] <- NA
-  })
+    temp_predict$unit_sales, temp_predict$prediction)$p.value),
+  error = function(x) {stores_and_items[i, "r_squared_test"] <- NA})
 }
 Sys.time() - time

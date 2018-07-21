@@ -144,3 +144,25 @@ hist(stores_and_items$r_squared_test, breaks = 100, main = "R-squared of test se
 
 hist(stores_and_items$pvalue_train, breaks = 100, main = "P-values of training set")
 hist(stores_and_items$r_squared_test, breaks = 100, main = "R-squared of test set")
+
+# Function for plotting predictions and actuals
+plot_predictions <- function(i){
+  temp_predictions <- test %>%
+    filter(
+      store_nbr == stores_and_items[i, 1]$store_nbr,
+      item_nbr == stores_and_items[i, 2]$item_nbr)
+  
+  temp_predictions$prediction <- predict(stores_and_items$formula[[i]],
+                                         newdata = temp_predictions)
+
+  ggplot(temp_predictions, aes(as.Date(date))) +
+    geom_line(aes(y = unit_sales, group = 1), size = 1.5) +
+    geom_line(aes(y = prediction, group = 2), size = 1.5, col = "#01BFC4") +
+    ggtitle("Predicted vs actual") +
+    labs(subtitle = paste0("Store id: ", stores_and_items$store_nbr[i],
+                           ", Prodct id: ", stores_and_items$item_nbr[i],
+                           ", R-squared ", round(stores_and_items$r_squared_test[i], 2),
+                           ", P-value ", round(stores_and_items$pvalue_test[i], 3))) +
+    xlab("Date") +
+    ylab("Sales")
+}

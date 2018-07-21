@@ -136,3 +136,11 @@ for (i in 1:nrow(stores_and_items)) {
   error = function(x) {stores_and_items[i, "r_squared_test"] <- NA})
 }
 Sys.time() - time
+
+# Plotting
+par(mfrow = c(2, 1))
+hist(stores_and_items$r_squared_train, breaks = 100, main = "R-squared of training set")
+hist(stores_and_items$r_squared_test, breaks = 100, main = "R-squared of test set")
+
+hist(stores_and_items$pvalue_train, breaks = 100, main = "P-values of training set")
+hist(stores_and_items$r_squared_test, breaks = 100, main = "R-squared of test set")

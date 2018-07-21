@@ -2,6 +2,7 @@ library(data.table)
 library(MASS)
 library(dplyr)
 library(broom)
+library(ggplot2)
 
 memory.limit(1e9)
 sales <- fread("train.csv", nrows = 3939438)
@@ -146,15 +147,14 @@ hist(stores_and_items$pvalue_train, breaks = 100, main = "P-values of training s
 hist(stores_and_items$r_squared_test, breaks = 100, main = "R-squared of test set")
 
 # Function for plotting predictions and actuals
-plot_predictions <- function(i){
-  temp_predictions <- test %>%
+plot_predictions <- function(i = NA, store = NA, item = NA){
+  if(!is.na(i)){temp_predictions <- test %>%
     filter(
       store_nbr == stores_and_items[i, 1]$store_nbr,
       item_nbr == stores_and_items[i, 2]$item_nbr)
   
   temp_predictions$prediction <- predict(stores_and_items$formula[[i]],
                                          newdata = temp_predictions)
-
   ggplot(temp_predictions, aes(as.Date(date))) +
     geom_line(aes(y = unit_sales, group = 1), size = 1.5) +
     geom_line(aes(y = prediction, group = 2), size = 1.5, col = "#01BFC4") +
@@ -165,4 +165,28 @@ plot_predictions <- function(i){
                            ", P-value ", round(stores_and_items$pvalue_test[i], 3))) +
     xlab("Date") +
     ylab("Sales")
+  
+  } else {
+    temp_predictions <- test %>%
+      filter(
+        store_nbr == store,
+        item_nbr == item)
+    which_row <- which(stores_and_items$store_nbr == store & 
+                         stores_and_items$item_nbr == item)
+    
+    temp_predictions$prediction <- predict(stores_and_items[[which_row, "formula"]])
+    
+    ggplot(temp_predictions, aes(as.Date(date))) +
+      geom_line(aes(y = unit_sales, group = 1), size = 1.5) +
+      geom_line(aes(y = prediction, group = 2), size = 1.5, col = "#01BFC4") +
+      ggtitle("Predicted vs actual") +
+      labs(subtitle = paste0("Store id: ", store,
+                             ", Prodct id: ", item,
+                             ", R-squared ", round(stores_and_items[
+                                 which_row,"r_squared_test"]$r_squared_test, 2),
+                             ", P-value ", round(stores_and_items[
+                               which_row, "pvalue_test"]$pvalue_test, 3))) +
+      xlab("Date") +
+      ylab("Sales")
+  }
 }

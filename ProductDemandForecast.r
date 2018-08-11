@@ -144,7 +144,7 @@ hist(stores_and_items$r_squared_train, breaks = 100, main = "R-squared of traini
 hist(stores_and_items$r_squared_test, breaks = 100, main = "R-squared of test set")
 
 hist(stores_and_items$pvalue_train, breaks = 100, main = "P-values of training set")
-hist(stores_and_items$r_squared_test, breaks = 100, main = "R-squared of test set")
+hist(stores_and_items$pvalue_test, breaks = 100, main = "P-values of test set")
 
 # Function for plotting predictions and actuals
 plot_predictions <- function(i = NA, store = NA, item = NA){

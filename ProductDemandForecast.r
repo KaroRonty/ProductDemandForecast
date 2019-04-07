@@ -1,8 +1,9 @@
-library(data.table)
 library(MASS)
 library(dplyr)
 library(broom)
 library(ggplot2)
+library(dummies)
+library(data.table)
 
 memory.limit(1e9)
 sales <- fread("train.csv", nrows = 3939438)
@@ -26,20 +27,17 @@ length(unique(stores_and_items$item_nbr))
 nrow(stores_and_items)
 
 # Mutate holidays to binary for each date
-holidays_bin <- holidays %>%
-  mutate(
-    additional = ifelse(type == "Additional", 1, 0),
-    bridge = ifelse(type == "Bridge", 1, 0),
-    event = ifelse(type == "Event", 1, 0),
-    holiday = ifelse(type == "Holiday", 1, 0),
-    transfer = ifelse(type == "Transfer", 1, 0),
-    workday = ifelse(type == "Work Day", 1, 0),
+holidays_bin <- as.data.frame(cbind(holidays$date,
+                                    dummy(holidays$type),
+                                    dummy(holidays$locale),
+                                    as.numeric(holidays$transferred)))
 
-    local = ifelse(locale == "Local", 1, 0),
-    regional = ifelse(locale == "Regional", 1, 0),
-    transferred = as.numeric(transferred)
-  ) %>%
-  select(-type, -locale, -locale_name, -description)
+colnames(holidays_bin) <- c("date", "additional", "bridge", "event", "holiday",
+                            "transfer", "workday", "local", "national",
+                            "regional", "transferred")
+
+holidays_bin$date <- as.character(holidays_bin$date)
+holidays_bin[, 2:11] <- apply(holidays_bin[, 2:11], 2, as.numeric)
 
 # Join holidays to sales data
 train <- left_join(train, holidays_bin, by = "date")
@@ -64,6 +62,7 @@ stores_and_items <- stores_and_items %>%
   ) %>%
   as_tibble()
 
+i_holder <- c()
 # Make regressions using training data
 time <- Sys.time()
 for (i in 1:nrow(stores_and_items)) {
@@ -73,17 +72,17 @@ for (i in 1:nrow(stores_and_items)) {
       store_nbr == stores_and_items[i, 1]$store_nbr,
       item_nbr == stores_and_items[i, 2]$item_nbr
     )
-
+  
   # If not enough data, go to next
   if (nrow(temp) == 0 || nrow(temp) == 1) {next}
-
+  
   # Do linear models for forecasting demand
   lm <- tryCatch(lm(unit_sales ~
-  onpromotion + transferred + local + regional + additional +
-    bridge + event + holiday + transfer + workday + weekday,
-  data = temp),
-  error = function(x) {lm <- NA})
-
+                      onpromotion + transferred + local + regional + additional +
+                      bridge + event + holiday + transfer + workday + weekday,
+                    data = temp),
+                 error = function(x) {lm <- NA})
+  
   # Skip stepwise selection and set forecast as mean sales if AIC is -infinite
   if (is.na(lm) || AIC(lm) == -Inf) {
     formula <- sum(temp$unit_sales) /
@@ -92,15 +91,15 @@ for (i in 1:nrow(stores_and_items)) {
     next
   }
   lm_stepwise <- stepAIC(lm, trace = F)
-
+  
   # Select the model with better r-squared
   ifelse(glance(lm_stepwise)$r.squared > glance(lm_stepwise)$r.squared,
-    formula <- temp %>%
-      do(model = lm),
-    formula <- temp %>%
-      do(model = stepAIC(lm, trace = F))
+         formula <- temp %>%
+           do(model = lm),
+         formula <- temp %>%
+           do(model = stepAIC(lm, trace = F))
   )
-
+  
   stores_and_items[i, "r_squared_train"] <- summary(lm)$r.squared
   stores_and_items[i, "pvalue_train"] <- glance(lm)$p.value
   stores_and_items[i, "formula"] <- formula
@@ -116,25 +115,25 @@ for (i in 1:nrow(stores_and_items)) {
       store_nbr == stores_and_items[i, 1]$store_nbr,
       item_nbr == stores_and_items[i, 2]$item_nbr
     )
-
+  
   # If not enough data to predict or formula was made on lines 78-81, go to next
   if (nrow(temp_predict) == 0 || nrow(temp_predict) == 1) {next}
   if (is.numeric(stores_and_items$formula[[i]])) {next}
-
+  
   # Get the formula from a cell and use it to predict
   temp_predict$prediction <- predict(stores_and_items$formula[[i]],
-    newdata = temp_predict
+                                     newdata = temp_predict
   )
   if (is.na(temp_predict$prediction)) {next}
-
+  
   # Calculate the r^2 and p-value for the test set
   stores_and_items[i, "r_squared_test"] <- tryCatch(unname(cor.test(
     temp_predict$unit_sales, temp_predict$prediction)$estimate)^2,
-  error = function(x) {stores_and_items[i, "r_squared_test"] <- NA})
-
+    error = function(x) {stores_and_items[i, "r_squared_test"] <- NA})
+  
   stores_and_items[i, "pvalue_test"] <- tryCatch(unname(cor.test(
     temp_predict$unit_sales, temp_predict$prediction)$p.value),
-  error = function(x) {stores_and_items[i, "r_squared_test"] <- NA})
+    error = function(x) {stores_and_items[i, "r_squared_test"] <- NA})
 }
 Sys.time() - time
 
@@ -183,7 +182,7 @@ plot_predictions <- function(i = NA, store = NA, item = NA){
       labs(subtitle = paste0("Store id: ", store,
                              ", Prodct id: ", item,
                              ", R-squared ", round(stores_and_items[
-                                 which_row,"r_squared_test"]$r_squared_test, 2),
+                               which_row,"r_squared_test"]$r_squared_test, 2),
                              ", P-value ", round(stores_and_items[
                                which_row, "pvalue_test"]$pvalue_test, 3))) +
       xlab("Date") +

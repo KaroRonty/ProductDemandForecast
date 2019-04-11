@@ -1,6 +1,9 @@
 library(MASS)
 library(dplyr)
 library(broom)
+library(purrr)
+library(tibble)
+library(glmnet)
 library(ggplot2)
 library(dummies)
 library(data.table)
@@ -42,8 +45,7 @@ holidays_bin[, 2:11] <- apply(holidays_bin[, 2:11], 2, as.numeric)
 # Join holidays to sales data
 train <- left_join(train, holidays_bin, by = "date")
 test <- left_join(test, holidays_bin, by = "date")
-# Check if any other fields are NA & replace NAs with zeros
-apply(train, 2, function(x) any(is.na(x)))
+# Replace NAs with zeros
 train[is.na(train)] <- 0
 test[is.na(test)] <- 0
 
@@ -61,6 +63,58 @@ stores_and_items <- stores_and_items %>%
     formula = NA
   ) %>%
   as_tibble()
+
+# Temp dataset to run faster
+tr <- train %>% 
+  filter(store_nbr %in% c(1, 25), item_nbr %in% c(103665, 105574))
+#################################
+
+# Group
+train_grouped <- tr %>%  ## tr
+  group_by(store_nbr, item_nbr)
+
+# Make model matrices
+mm_holder <- train_grouped %>%
+  do(mm = safely(model.matrix)(unit_sales ~ onpromotion + transferred +
+                                    local + regional + additional + bridge +
+                                    event + holiday + transfer + workday +
+                                    weekday, data = .)$result)
+
+# Add unit sales to the data frame
+sales_holder <- train_grouped %>% 
+  summarise(unit_sales = list(unit_sales)) %>% 
+  inner_join(., mm_holder)
+
+# Do cross validations for every store-product combination
+temp2 <- sales_holder %>% 
+  group_by(store_nbr, item_nbr) %>% 
+  # pluck() to get the first element inside each list
+  do(cv = safely(cv.glmnet)(pluck(.$mm, 1), 
+                            pluck(.$unit_sales, 1), alpha = 1, nlambda = 100)$result) %>% 
+  inner_join(sales_holder, .)
+
+# Extract lambdas to a separate column
+temp <- temp2 %>%
+  add_column(unlist(lapply(temp2$cv, `[`, "lambda.1se")))
+colnames(temp)[6] <- "lambda"
+
+# Do regressions
+regression <- sales_holder %>% 
+  group_by(store_nbr, item_nbr) %>% 
+  do(lasso = safely(glmnet)(pluck(.$mm, 1),
+                            pluck(.$unit_sales, 1),
+                            type.gaussian = "naive",
+                            lambda = .$lambda)$result) %>% 
+  inner_join(temp, .)
+
+# Predict by using training data to obtain accuracy
+predictions <- regression %>% 
+  group_by(store_nbr, item_nbr) %>% 
+  do(predictions = safely(predict)(pluck(.$lasso, 1),
+                                   s = .$lambda,
+                                   newx = pluck(.$mm, 1))$result) %>% 
+  inner_join(regression, .)
+##########################################################################
 
 i_holder <- c()
 # Make regressions using training data

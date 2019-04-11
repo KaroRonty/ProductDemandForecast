@@ -67,6 +67,11 @@ stores_and_items <- stores_and_items %>%
 # Temp dataset to run faster
 tr <- train %>% 
   filter(store_nbr %in% c(1, 25), item_nbr %in% c(103665, 105574))
+
+
+tr <- train %>%
+  arrange(store_nbr, item_nbr) %>% 
+  slice(1:70000)
 #################################
 
 # Group
@@ -95,7 +100,8 @@ temp2 <- sales_holder %>%
 
 # Extract lambdas to a separate column
 temp <- temp2 %>%
-  add_column(unlist(lapply(temp2$cv, `[`, "lambda.1se")))
+  # Select lamdas from lists and convert NULLs to NAs
+  add_column(as.numeric(as.character(lapply(temp2$cv, `[[`, 9))))
 colnames(temp)[6] <- "lambda"
 
 # Do regressions
@@ -114,6 +120,22 @@ predictions <- regression %>%
                                    s = .$lambda,
                                    newx = pluck(.$mm, 1))$result) %>% 
   inner_join(regression, .)
+
+# Find the lengths of the actual values where predictions are missing
+len <- sapply(predictions$unit_sales[which(predictions$predictions == "NULL")], length)
+# Make NAs that have same lengths as the unit_sales
+nas <- sapply(len, function(x) rep(NA, x))
+# Replace single NAs with multiple NAs that are same length as the corresponding unit_sales
+predictions$predictions[which(predictions$predictions == "NULL")] <- nas
+
+# Calculate correlations
+predictions <- predictions %>%
+  group_by(store_nbr, item_nbr) %>% 
+  summarise(r = safely(cor)(pluck(unit_sales, 1),
+                            pluck(predictions, 1),
+                            use = "pairwise.complete.obs")$result) %>% 
+  inner_join(predictions, .)
+
 ##########################################################################
 
 i_holder <- c()

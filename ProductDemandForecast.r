@@ -54,13 +54,8 @@ test[is.na(test)] <- 0
 train$weekday <- as.factor(weekdays(as.Date(train$date)))
 test$weekday <- as.factor(weekdays(as.Date(test$date)))
 
-# Add fields for accuracy measures & format into tibble to store formulas
+# Convert df to tibble
 stores_and_items <- stores_and_items %>%
-  mutate(
-    r_squared_test = NA,
-    pvalue_test = NA,
-    formula = NA
-  ) %>%
   as_tibble()
 
 # Temp dataset to run faster
@@ -84,7 +79,7 @@ mm_holder <- train_grouped %>%
                                     event + holiday + transfer + workday +
                                     weekday, data = .)$result)
 
-# Add unit sales to the data frame
+# Add unit sales to the tibble
 sales_holder <- train_grouped %>% 
   summarise(unit_sales = list(unit_sales)) %>% 
   inner_join(., mm_holder)
@@ -153,46 +148,70 @@ stores_and_items <- predictions %>%
 
 #################################
 
+te <- test %>% 
+  filter(store_nbr %in% c(1, 25), item_nbr %in% c(103665, 105574))
 
+# Group
+test_grouped <- te %>%  ## tr
+  group_by(store_nbr, item_nbr)
+
+# Make model matrices for test set
+mm_holder_test <- test_grouped %>%
+  do(mm = safely(model.matrix)(unit_sales ~ onpromotion + transferred +
+                                 local + regional + additional + bridge +
+                                 event + holiday + transfer + workday +
+                                 weekday, data = .)$result)
+
+# Add unit sales to tibble
+sales_holder_test <- test_grouped %>% 
+  summarise(unit_sales = list(unit_sales)) %>% 
+  inner_join(., mm_holder_test)
+
+# Attach lasso models & lambdas to test set
+sales_holder_test <- predictions %>% 
+  select(store_nbr, item_nbr, lambda, lasso) %>% 
+  inner_join(sales_holder_test)
+
+# Calculate predictions for test set
+sales_holder_test <- sales_holder_test %>% 
+  group_by(store_nbr, item_nbr) %>% 
+  do(predictions = safely(predict)(pluck(.$lasso, 1),
+                                   s = .$lambda,
+                                   newx = pluck(.$mm, 1))$result) %>% 
+  inner_join(sales_holder_test, .)
+
+# Find the lengths of the actual values where predictions are missing
+len <- sapply(sales_holder_test$unit_sales[which(sales_holder_test$predictions == "NULL")], length)
+# Make NAs that have same lengths as the unit_sales
+nas <- sapply(len, function(x) rep(NA, x))
+# Replace single NAs with multiple NAs that are same length as the corresponding unit_sales
+sales_holder_test$predictions[which(sales_holder_test$predictions == "NULL")] <- nas
+
+# Calculate correlations and p-values for test set
+sales_holder_test <- sales_holder_test %>%
+  group_by(store_nbr, item_nbr) %>% 
+  summarise(r = safely(cor)(pluck(unit_sales, 1),
+                            pluck(predictions, 1),
+                            use = "pairwise.complete.obs")$result,
+            p = find_pvalue(pluck(unit_sales, 1),
+                            pluck(predictions, 1))) %>% 
+  inner_join(sales_holder_test, .)
+
+# Add to stores_and_items tibble
+stores_and_items <- sales_holder_test %>% 
+  select(store_nbr, item_nbr, r, p) %>% 
+  rename(r_squared_test = r,
+         p_value_test = p) %>% 
+  right_join(stores_and_items, by = c("store_nbr", "item_nbr"))
 
 ##########################################################################
-time <- Sys.time()
-# Test the regression on test data
-for (i in 1:nrow(stores_and_items)) {
-  temp_predict <- test %>%
-    filter(
-      store_nbr == stores_and_items[i, 1]$store_nbr,
-      item_nbr == stores_and_items[i, 2]$item_nbr
-    )
-  
-  # If not enough data to predict or formula was made on lines 78-81, go to next
-  if (nrow(temp_predict) == 0 || nrow(temp_predict) == 1) {next}
-  if (is.numeric(stores_and_items$formula[[i]])) {next}
-  
-  # Get the formula from a cell and use it to predict
-  temp_predict$prediction <- predict(stores_and_items$formula[[i]],
-                                     newdata = temp_predict
-  )
-  if (is.na(temp_predict$prediction)) {next}
-  
-  # Calculate the r^2 and p-value for the test set
-  stores_and_items[i, "r_squared_test"] <- tryCatch(unname(cor.test(
-    temp_predict$unit_sales, temp_predict$prediction)$estimate)^2,
-    error = function(x) {stores_and_items[i, "r_squared_test"] <- NA})
-  
-  stores_and_items[i, "pvalue_test"] <- tryCatch(unname(cor.test(
-    temp_predict$unit_sales, temp_predict$prediction)$p.value),
-    error = function(x) {stores_and_items[i, "r_squared_test"] <- NA})
-}
-Sys.time() - time
-
 # Plotting
 par(mfrow = c(2, 1))
 hist(stores_and_items$r_squared_train, breaks = 100, main = "R-squared of training set")
 hist(stores_and_items$r_squared_test, breaks = 100, main = "R-squared of test set")
 
-hist(stores_and_items$pvalue_train, breaks = 100, main = "P-values of training set")
-hist(stores_and_items$pvalue_test, breaks = 100, main = "P-values of test set")
+hist(stores_and_items$p_value_train, breaks = 100, main = "P-values of training set")
+hist(stores_and_items$p_value_test, breaks = 100, main = "P-values of test set")
 
 # Function for plotting predictions and actuals
 plot_predictions <- function(i = NA, store = NA, item = NA){

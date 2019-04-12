@@ -8,6 +8,7 @@ library(ggplot2)
 library(dummies)
 library(data.table)
 
+options(scipen = 1e6)
 memory.limit(1e9)
 sales <- fread("train.csv", nrows = 3939438)
 holidays <- fread("holidays_events.csv")
@@ -56,9 +57,7 @@ test$weekday <- as.factor(weekdays(as.Date(test$date)))
 # Add fields for accuracy measures & format into tibble to store formulas
 stores_and_items <- stores_and_items %>%
   mutate(
-    r_squared_train = NA,
     r_squared_test = NA,
-    pvalue_train = NA,
     pvalue_test = NA,
     formula = NA
   ) %>%
@@ -128,61 +127,35 @@ nas <- sapply(len, function(x) rep(NA, x))
 # Replace single NAs with multiple NAs that are same length as the corresponding unit_sales
 predictions$predictions[which(predictions$predictions == "NULL")] <- nas
 
-# Calculate correlations
+# Function for finding the p-values of the correlations
+find_pvalue <- function(x, y){
+  ifelse(all(is.na(y[[1]])), NA, 
+  safely(cor.test)(x,y)$result$p.value
+  )
+}
+
+# Calculate correlations and p-values for training set
 predictions <- predictions %>%
   group_by(store_nbr, item_nbr) %>% 
   summarise(r = safely(cor)(pluck(unit_sales, 1),
                             pluck(predictions, 1),
-                            use = "pairwise.complete.obs")$result) %>% 
+                            use = "pairwise.complete.obs")$result,
+            p = find_pvalue(pluck(unit_sales, 1),
+                         pluck(predictions, 1))) %>% 
   inner_join(predictions, .)
 
+# Add to stores_and_items tibble
+stores_and_items <- predictions %>% 
+  select(store_nbr, item_nbr, r, p) %>% 
+  rename(r_squared_train = r,
+         p_value_train = p) %>% 
+  right_join(stores_and_items, by = c("store_nbr", "item_nbr"))
+
+#################################
+
+
+
 ##########################################################################
-
-i_holder <- c()
-# Make regressions using training data
-time <- Sys.time()
-for (i in 1:nrow(stores_and_items)) {
-  # Select one item from one store at a time
-  temp <- train %>%
-    filter(
-      store_nbr == stores_and_items[i, 1]$store_nbr,
-      item_nbr == stores_and_items[i, 2]$item_nbr
-    )
-  
-  # If not enough data, go to next
-  if (nrow(temp) == 0 || nrow(temp) == 1) {next}
-  
-  # Do linear models for forecasting demand
-  lm <- tryCatch(lm(unit_sales ~
-                      onpromotion + transferred + local + regional + additional +
-                      bridge + event + holiday + transfer + workday + weekday,
-                    data = temp),
-                 error = function(x) {lm <- NA})
-  
-  # Skip stepwise selection and set forecast as mean sales if AIC is -infinite
-  if (is.na(lm) || AIC(lm) == -Inf) {
-    formula <- sum(temp$unit_sales) /
-      as.numeric(max(as.Date(temp$date)) - min(as.Date(temp$date)))
-    stores_and_items[i, "formula"] <- formula
-    next
-  }
-  lm_stepwise <- stepAIC(lm, trace = F)
-  
-  # Select the model with better r-squared
-  ifelse(glance(lm_stepwise)$r.squared > glance(lm_stepwise)$r.squared,
-         formula <- temp %>%
-           do(model = lm),
-         formula <- temp %>%
-           do(model = stepAIC(lm, trace = F))
-  )
-  
-  stores_and_items[i, "r_squared_train"] <- summary(lm)$r.squared
-  stores_and_items[i, "pvalue_train"] <- glance(lm)$p.value
-  stores_and_items[i, "formula"] <- formula
-  i_holder[i] <- i
-}
-Sys.time() - time
-
 time <- Sys.time()
 # Test the regression on test data
 for (i in 1:nrow(stores_and_items)) {

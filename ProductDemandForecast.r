@@ -1,5 +1,6 @@
 library(MASS)
 library(dplyr)
+library(tidyr)
 library(broom)
 library(purrr)
 library(tibble)
@@ -63,9 +64,6 @@ tr <- train %>%
   filter(store_nbr %in% c(1, 25), item_nbr %in% c(103665, 105574))
 
 
-tr <- train %>%
-  arrange(store_nbr, item_nbr) %>% 
-  slice(1:70000)
 #################################
 
 # Group
@@ -164,7 +162,7 @@ mm_holder_test <- test_grouped %>%
 
 # Add unit sales to tibble
 sales_holder_test <- test_grouped %>% 
-  summarise(unit_sales = list(unit_sales)) %>% 
+  summarise(unit_sales_test = list(unit_sales)) %>% 
   inner_join(., mm_holder_test)
 
 # Attach lasso models & lambdas to test set
@@ -175,85 +173,72 @@ sales_holder_test <- predictions %>%
 # Calculate predictions for test set
 sales_holder_test <- sales_holder_test %>% 
   group_by(store_nbr, item_nbr) %>% 
-  do(predictions = safely(predict)(pluck(.$lasso, 1),
+  do(predictions_test = safely(predict)(pluck(.$lasso, 1),
                                    s = .$lambda,
                                    newx = pluck(.$mm, 1))$result) %>% 
   inner_join(sales_holder_test, .)
 
 # Find the lengths of the actual values where predictions are missing
-len <- sapply(sales_holder_test$unit_sales[which(sales_holder_test$predictions == "NULL")], length)
+len <- sapply(sales_holder_test$unit_sales_test[
+  which(sales_holder_test$predictions_test == "NULL")], length)
 # Make NAs that have same lengths as the unit_sales
 nas <- sapply(len, function(x) rep(NA, x))
 # Replace single NAs with multiple NAs that are same length as the corresponding unit_sales
-sales_holder_test$predictions[which(sales_holder_test$predictions == "NULL")] <- nas
+sales_holder_test$predictions_test[which(sales_holder_test$predictions_test == "NULL")] <- nas
 
 # Calculate correlations and p-values for test set
 sales_holder_test <- sales_holder_test %>%
   group_by(store_nbr, item_nbr) %>% 
-  summarise(r = safely(cor)(pluck(unit_sales, 1),
-                            pluck(predictions, 1),
+  summarise(r_test = safely(cor)(pluck(unit_sales_test, 1),
+                            pluck(predictions_test, 1),
                             use = "pairwise.complete.obs")$result,
-            p = find_pvalue(pluck(unit_sales, 1),
-                            pluck(predictions, 1))) %>% 
+            p_test = find_pvalue(pluck(unit_sales_test, 1),
+                            pluck(predictions_test, 1))) %>% 
   inner_join(sales_holder_test, .)
 
 # Add to stores_and_items tibble
 stores_and_items <- sales_holder_test %>% 
-  select(store_nbr, item_nbr, r, p) %>% 
-  rename(r_squared_test = r,
-         p_value_test = p) %>% 
-  right_join(stores_and_items, by = c("store_nbr", "item_nbr"))
+  select(store_nbr, item_nbr, r_test, p_test) %>% 
+  rename(r_squared_test = r_test,
+         p_value_test = p_test) %>% 
+  left_join(stores_and_items, ., by = c("store_nbr", "item_nbr"))
 
 ##########################################################################
 # Plotting
 par(mfrow = c(2, 1))
-hist(stores_and_items$r_squared_train, breaks = 100, main = "R-squared of training set")
-hist(stores_and_items$r_squared_test, breaks = 100, main = "R-squared of test set")
+hist(stores_and_items$r_squared_train^2, breaks = 100, main = "R-squared of training set")
+hist(stores_and_items$r_squared_test^2, breaks = 100, main = "R-squared of test set")
 
 hist(stores_and_items$p_value_train, breaks = 100, main = "P-values of training set")
 hist(stores_and_items$p_value_test, breaks = 100, main = "P-values of test set")
-
+par(mfrow = c(1, 1))
+################################
 # Function for plotting predictions and actuals
-plot_predictions <- function(i = NA, store = NA, item = NA){
-  if(!is.na(i)){temp_predictions <- test %>%
-    filter(
-      store_nbr == stores_and_items[i, 1]$store_nbr,
-      item_nbr == stores_and_items[i, 2]$item_nbr)
-  
-  temp_predictions$prediction <- predict(stores_and_items$formula[[i]],
-                                         newdata = temp_predictions)
-  ggplot(temp_predictions, aes(as.Date(date))) +
-    geom_line(aes(y = unit_sales, group = 1), size = 1.5) +
-    geom_line(aes(y = prediction, group = 2), size = 1.5, col = "#01BFC4") +
-    ggtitle("Predicted vs actual") +
-    labs(subtitle = paste0("Store id: ", stores_and_items$store_nbr[i],
-                           ", Prodct id: ", stores_and_items$item_nbr[i],
-                           ", R-squared ", round(stores_and_items$r_squared_test[i], 2),
-                           ", P-value ", round(stores_and_items$pvalue_test[i], 3))) +
-    xlab("Date") +
-    ylab("Sales")
-  
-  } else {
-    temp_predictions <- test %>%
-      filter(
-        store_nbr == store,
-        item_nbr == item)
-    which_row <- which(stores_and_items$store_nbr == store & 
-                         stores_and_items$item_nbr == item)
-    
-    temp_predictions$prediction <- predict(stores_and_items[[which_row, "formula"]])
-    
-    ggplot(temp_predictions, aes(as.Date(date))) +
-      geom_line(aes(y = unit_sales, group = 1), size = 1.5) +
-      geom_line(aes(y = prediction, group = 2), size = 1.5, col = "#01BFC4") +
-      ggtitle("Predicted vs actual") +
-      labs(subtitle = paste0("Store id: ", store,
-                             ", Prodct id: ", item,
-                             ", R-squared ", round(stores_and_items[
-                               which_row,"r_squared_test"]$r_squared_test, 2),
-                             ", P-value ", round(stores_and_items[
-                               which_row, "pvalue_test"]$pvalue_test, 3))) +
-      xlab("Date") +
-      ylab("Sales")
-  }
+
+plot_predictions <- function(store = NA, item = NA){
+
+plot_data <- predictions %>% 
+  filter(store_nbr == store, item_nbr == item) %>% 
+  select(store_nbr, item_nbr, unit_sales, predictions) %>% 
+  inner_join(sales_holder_test)
+
+ts <- c(plot_data$unit_sales[[1]], plot_data$unit_sales_test[[1]])
+ts2 <- c(plot_data$predictions[[1]], plot_data$predictions_test[[1]])
+ts <- as.data.frame(cbind(1:length(ts), ts))
+ts <- as.data.frame(cbind(ts, ts2))
+colnames(ts) <- c("time", "actual", "predictions")
+
+
+ggplot(ts) + 
+  geom_line(aes(x = time, y = actual)) +
+  geom_line(aes(x = time, y = predictions), col = "#01BFC4") +
+  geom_vline(xintercept = length(plot_data$unit_sales[[1]]), color = "red", size = 1) +
+  ggtitle("Predicted vs actual") +
+  labs(subtitle = paste0("Store id: ", store,
+                         ", Prodct id: ", item,
+                         ", R-squared ", round(plot_data$r_test, 2),
+                         ", P-value ", round(plot_data$p_test, 3))) +
+  xlab("Time") +
+  ylab("Sales") +
+  theme_bw()
 }

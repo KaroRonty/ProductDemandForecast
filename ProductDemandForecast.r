@@ -59,15 +59,11 @@ test$weekday <- as.factor(weekdays(as.Date(test$date)))
 stores_and_items <- stores_and_items %>%
   as_tibble()
 
-# Temp dataset to run faster
-tr <- train %>% 
-  filter(store_nbr %in% c(1, 25), item_nbr %in% c(103665, 105574))
-
-
-#################################
+# Training set
+################################
 
 # Group
-train_grouped <- tr %>%  ## tr
+train_grouped <- train %>% 
   group_by(store_nbr, item_nbr)
 
 # Make model matrices
@@ -122,7 +118,8 @@ predictions$predictions[which(predictions$predictions == "NULL")] <- nas
 
 # Function for finding the p-values of the correlations
 find_pvalue <- function(x, y){
-  ifelse(all(is.na(y[[1]])), NA, 
+  ifelse(all(is.na(y[1])) || all(is.na(x[1])) ||
+           length(y) < 3, NA, 
   safely(cor.test)(x,y)$result$p.value
   )
 }
@@ -144,13 +141,11 @@ stores_and_items <- predictions %>%
          p_value_train = p) %>% 
   right_join(stores_and_items, by = c("store_nbr", "item_nbr"))
 
-#################################
-
-te <- test %>% 
-  filter(store_nbr %in% c(1, 25), item_nbr %in% c(103665, 105574))
+# Test set
+################################
 
 # Group
-test_grouped <- te %>%  ## tr
+test_grouped <- test %>%
   group_by(store_nbr, item_nbr)
 
 # Make model matrices for test set
@@ -203,8 +198,8 @@ stores_and_items <- sales_holder_test %>%
          p_value_test = p_test) %>% 
   left_join(stores_and_items, ., by = c("store_nbr", "item_nbr"))
 
-##########################################################################
 # Plotting
+################################
 par(mfrow = c(2, 1))
 hist(stores_and_items$r_squared_train^2, breaks = 100, main = "R-squared of training set")
 hist(stores_and_items$r_squared_test^2, breaks = 100, main = "R-squared of test set")
@@ -212,9 +207,9 @@ hist(stores_and_items$r_squared_test^2, breaks = 100, main = "R-squared of test 
 hist(stores_and_items$p_value_train, breaks = 100, main = "P-values of training set")
 hist(stores_and_items$p_value_test, breaks = 100, main = "P-values of test set")
 par(mfrow = c(1, 1))
-################################
-# Function for plotting predictions and actuals
 
+# Function for plotting predictions and actuals
+################################
 plot_predictions <- function(store = NA, item = NA){
 
 plot_data <- predictions %>% 

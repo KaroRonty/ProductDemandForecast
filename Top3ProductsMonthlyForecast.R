@@ -1,7 +1,6 @@
 library(data.table) # fread function
 library(zoo) # approximating NAs
 library(tidyr) # unite function
-library(padr) # padding
 library(dtplyr) # converting dplyr to data.table
 library(dplyr) # data wrangling
 library(lubridate) # handling dates
@@ -15,6 +14,10 @@ library(tibble) # add_column function
 library(multidplr) # parallel dplyr
 
 # Reading & transforming the data ----
+# Select specific items
+items_to_be_plotted <- c(1047679,
+                         819932,
+                         364606)
 
 # Oil price data
 # Aggregate oil price to monthly and approximate NAs
@@ -31,8 +34,9 @@ oil_df <- fread("oil.csv") %>%
 
 # Sales data
 # Select interval and aggregate to monthly
-data5 <- fread("train.csv") %>% 
+sales_data <- fread("train.csv") %>% 
   lazy_dt() %>% 
+  filter(item_nbr %in% items_to_be_plotted) %>% 
   filter(date >= as.Date(last(date)) - years(4)) %>% 
   mutate(date = as.Date(date),
          year = year(date),
@@ -42,52 +46,18 @@ data5 <- fread("train.csv") %>%
   group_by(year, month, item_nbr, store_nbr) %>% 
   summarise(sales = sum(unit_sales),
             promo = mean(promo)) %>% 
+  mutate(year_month = as.Date(paste0(year, "-", month, "-01"))) %>% 
   as_tibble()
 
-# TODO: change
-data5 <- readRDS("data5.rds")
-bu <- data5
-
-# Find out most sold products
-most_sold <- data5 %>% 
-  group_by(item_nbr) %>% 
-  summarise(sales = sum(sales)) %>% 
-  arrange(-sales) %>% 
-  head(6)
-
-# Select only the most sold products
-data5 <- data5 %>% 
-  filter(item_nbr %in% most_sold$item_nbr) %>% 
-  mutate(year_month = as.Date(paste0(year, "-", month, "-01")))
-
 # Use ~67/33 training/test split
-split_date <- last(data5$year_month) - years(1)
-# TODO: remove
-# Use two of the three years as a training set
-# training_set_size <- 3 / 4
-
-# TODO: remove/keep padding
-# Pad months with zero sales
-data5 <- data5 %>% 
-  group_by(store_nbr, item_nbr) %>% 
-  pad(interval = "month", break_above = 1e9)
-
-# Add back dates and replace padded NAs with zeros
-data5 <- data5 %>% 
-  lazy_dt() %>% 
-  mutate(year = year(year_month),
-         month = month(year_month) %>% as.character(),
-         sales = replace_na(sales, 0),
-         promo = replace_na(promo, 0)) %>% 
-  as_tibble()# %>% 
-  #select(-temp_date)
+split_date <- last(sales_data$year_month) - years(1)
 
 # Combine the sales data with the oil price data
-full_data <- data5 %>% 
+full_data <- sales_data %>% 
   left_join(oil_df)
 
 # Make lagged sales variables
-temp2 <- full_data %>%  # temp for testing
+full_data <- full_data %>%  # temp for testing
   arrange(item_nbr, store_nbr, year, as.numeric(month)) %>% 
   group_by(store_nbr, item_nbr) %>% 
   mutate(sales_lag12 = lag(sales, 12),
@@ -96,32 +66,27 @@ temp2 <- full_data %>%  # temp for testing
 
 # Splitting into training and test sets ----
 # Make test set with dates and actual sales
-to_model <- temp2 %>% 
+to_model <- full_data %>% 
   arrange(item_nbr, store_nbr, year, as.numeric(month)) %>% 
   group_by(item_nbr) %>% 
   filter(year_month <= split_date) %>% 
   summarise(year_month_train = list(year_month),
-            sales_train = list(sales),
-            stores_train = list(store_nbr))
+            sales_train = list(sales))
 
 # Make test set with dates and actual sales
-to_model <- temp2 %>% 
+to_model <- full_data %>% 
   arrange(item_nbr, store_nbr, year, as.numeric(month)) %>% 
   group_by(item_nbr) %>% 
   filter(year_month > split_date) %>% 
   summarise(year_month_test = list(year_month),
-            sales_test = list(sales),
-            stores_test = list(store_nbr)) %>% 
+            sales_test = list(sales)) %>% 
   inner_join(to_model, .)
 
-# TODO
-# to_model
-
 # Split into training and test sets by date
-train <- temp2 %>% 
+train <- full_data %>% 
   filter(year_month <= split_date)
   
-test <- temp2 %>% 
+test <- full_data %>% 
   filter(year_month > split_date)
 
 # Do model matrices for training data (dummy variables etc.)
@@ -242,6 +207,7 @@ make_predictions <- function(model_df, lambda = FALSE){
                                           newx = pluck(.$test, 1))$result) %>% 
     inner_join(result_data, ., by = "item_nbr")
   } else {
+    # Make predictions using the models (training set)
     result_data <- model_df %>% 
       inner_join(model_data, by = "item_nbr") %>% 
       group_by(item_nbr) %>% 
@@ -278,6 +244,7 @@ make_predictions <- function(model_df, lambda = FALSE){
                               use = "pairwise.complete.obs")$result ^ 2) %>% 
     inner_join(result_data, ., by = "item_nbr")
   
+  # Print R-squareds
   print(paste("Mean training set R^2:",
               result_data$rsq_train %>% unlist() %>% mean() %>% substr(1, 5)))
   print(paste("Mean test set R^2:",
@@ -290,6 +257,8 @@ make_predictions <- function(model_df, lambda = FALSE){
   #  select(item_nbr, rsq_train, mape_train, rsq_test, mape_test)
 }
 
+# Function for plotting variable importances
+importance_plot <- list()
 make_importance_plots <- function(model_df, data_df, lambda = FALSE){
   for(i in 1:nrow(model_df)){
     # Calculate variable importances
@@ -318,22 +287,94 @@ make_importance_plots <- function(model_df, data_df, lambda = FALSE){
       geom_col() +
       coord_flip() +
       ggtitle(paste0("Product ", model_df$item_nbr[[i]], ", ",
-                     "test set R^2 ", data_df$rsq_test[[i]] %>% substr(1, 5)))
+                     "test set R^2 ", data_df$rsq_test[[i]] %>% substr(1, 5))) +
+      theme_light()
   }
   
   return(importance_plot)
 }
 
+# Make predictions for each model
+pred_Linear <- make_predictions(linear_models)
+pred_Ridge <- make_predictions(ridge_models, lambda = TRUE)
+pred_XGB <- make_predictions(xgb_models)
+
+# Plot variable importances
 do.call(grid.arrange, list(grobs = make_importance_plots(linear_models, 
-                                                         make_predictions(linear_models)),
+                                                         pred_Linear),
                            top = "Standardized variable importances, linear model"))
 
 do.call(grid.arrange, list(grobs = make_importance_plots(ridge_models, 
-                                   make_predictions(ridge_models,
-                                                    lambda = TRUE),
+                                                         pred_Ridge,
                                    lambda = TRUE),
                            top = "Standardized variable importances, ridge model"))
 
 do.call(grid.arrange, list(grobs = make_importance_plots(xgb_models, 
-                                   make_predictions(xgb_models)),
+                                                         pred_XGB),
                            top = "Standardized variable importances, XGBoost model"))
+
+# Unnest and aggregate actuals and predicitons to plottable format
+unnest_predictions <- function(data_df){
+  # Training set
+  unnested <- data_df %>% 
+    select(-lambda) %>% 
+    unnest(Date = year_month_train,
+           Actual = sales_train,
+           Prediction = predictions_train) %>% 
+    rbind(data_df %>% 
+            select(-lambda) %>% 
+            unnest(Date = year_month_train,
+                   Actual = sales_train,
+                   Prediction = predictions_train)) %>% 
+    group_by(item_nbr, Date) %>% 
+    summarise(Actual = sum(Actual),
+              Prediction = sum(Prediction)) %>% 
+    # Set negative predictions to zero
+    mutate(Prediction = ifelse(Prediction < 0, 0, Prediction))
+  
+  # Test set
+  unnested <- unnested %>% 
+    rbind(data_df %>% 
+            select(-lambda) %>% 
+            unnest(Date = year_month_test,
+                   Actual = sales_test,
+                   Prediction = predictions_test) %>% 
+            rbind(data_df %>% 
+                    select(-lambda) %>% 
+                    unnest(Date = year_month_test,
+                           Actual = sales_test,
+                           Prediction = predictions_test)) %>% 
+            group_by(item_nbr, Date) %>% 
+            summarise(Actual = sum(Actual),
+                      Prediction = sum(Prediction))) %>% 
+    # Set negative predictions to zero
+    mutate(Prediction = ifelse(Prediction < 0, 0, Prediction)) %>% 
+    filter(Date != last(Date))
+  
+  return(unnested)
+}
+
+# Loop for plotting actuals vs predictions
+p2 <- list()
+for(i in 1:length(ls()[startsWith(ls(), "pred_")])){
+  data_df <- ls()[startsWith(ls(), "pred_")][i]
+  p2[[i]] <- unnest_predictions(get(data_df)) %>% 
+    ggplot(aes(x = Date)) +
+    geom_line(aes(y = Actual), size = 1) +
+    geom_line(aes(y = Prediction), color = "#00BFC4", size = 1) +
+    geom_vline(xintercept = split_date, color = "red", alpha = 0.5, size = 1) +
+    scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+    facet_grid(rows = vars(item_nbr)) +
+    ggtitle(strsplit(ls()[startsWith(ls(), "pred_")][i], "_")[[1]][2]) +
+    ylab("Sales (pcs)") +
+    theme_light()
+  }
+
+# Plot actuals vs predictions for each model and product
+do.call(grid.arrange, list(grobs = p2,
+                           ncol = 3,
+                           top = paste0("Predictions (blue) vs actuals ",
+                                        "for different models and products, ",
+                           "red line separates training and test sets")))
+
+        

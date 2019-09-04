@@ -102,7 +102,7 @@ model_data <- train %>%
                                      data = .)$result[, -1]) %>%
   inner_join(to_model, .)
 
-# Do model matrices for training data (dummy variables etc.)
+# Do model matrices for test data (dummy variables etc.)
 model_data <- test %>% 
   group_by(item_nbr) %>% 
   do(test = safely(model.matrix)(sales ~
@@ -355,10 +355,10 @@ unnest_predictions <- function(data_df){
 }
 
 # Loop for plotting actuals vs predictions
-p2 <- list()
+prediction_plot <- list()
 for(i in 1:length(ls()[startsWith(ls(), "pred_")])){
   data_df <- ls()[startsWith(ls(), "pred_")][i]
-  p2[[i]] <- unnest_predictions(get(data_df)) %>% 
+  prediction_plot[[i]] <- unnest_predictions(get(data_df)) %>% 
     ggplot(aes(x = Date)) +
     geom_line(aes(y = Actual), size = 1) +
     geom_line(aes(y = Prediction), color = "#00BFC4", size = 1) +
@@ -371,10 +371,8 @@ for(i in 1:length(ls()[startsWith(ls(), "pred_")])){
   }
 
 # Plot actuals vs predictions for each model and product
-do.call(grid.arrange, list(grobs = p2,
+do.call(grid.arrange, list(grobs = prediction_plot,
                            ncol = 3,
                            top = paste0("Predictions (blue) vs actuals ",
                                         "for different models and products, ",
                            "red line separates training and test sets")))
-
-        

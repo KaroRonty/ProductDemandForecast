@@ -1,17 +1,16 @@
 library(data.table) # fread function
 library(zoo) # approximating NAs
-library(tidyr) # unite function
+library(tidyr) # unite function, replacing NAs
 library(dtplyr) # converting dplyr to data.table
 library(dplyr) # data wrangling
 library(lubridate) # handling dates
 library(purrr) # handling nested data
-library(glmnet) # lasso regression
+library(glmnet) # ridge regression
 library(caret) # XGBoost model, varImp function
-library(tidyr) # replacing NAs
 library(ggplot2) # plotting
-library(gridExtra) # plotting multiple plots
+library(gridExtra) # plotting multiple plots together
 library(tibble) # add_column function
-library(multidplr) # parallel dplyr
+library(multidplyr) # parallel dplyr
 
 # Reading & transforming the data ----
 # Select specific items
@@ -36,16 +35,19 @@ oil_df <- fread("oil.csv") %>%
 # Select interval and aggregate to monthly
 sales_data <- fread("train.csv") %>% 
   lazy_dt() %>% 
+  # Selected items only
   filter(item_nbr %in% items_to_be_plotted) %>% 
   filter(date >= as.Date(last(date)) - years(4)) %>% 
   mutate(date = as.Date(date),
          year = year(date),
          month = month(date) %>% as.character(),
+         # Replace missing promotions with zero
          promo = replace_na(onpromotion, 0),
          store_nbr = as.character(store_nbr)) %>% 
   group_by(year, month, item_nbr, store_nbr) %>% 
   summarise(sales = sum(unit_sales),
             promo = mean(promo)) %>% 
+  # Make a date column with the first day of the months
   mutate(year_month = as.Date(paste0(year, "-", month, "-01"))) %>% 
   as_tibble()
 
@@ -57,7 +59,7 @@ full_data <- sales_data %>%
   left_join(oil_df)
 
 # Make lagged sales variables
-full_data <- full_data %>%  # temp for testing
+full_data <- full_data %>% 
   arrange(item_nbr, store_nbr, year, as.numeric(month)) %>% 
   group_by(store_nbr, item_nbr) %>% 
   mutate(sales_lag12 = lag(sales, 12),
@@ -65,7 +67,7 @@ full_data <- full_data %>%  # temp for testing
   na.omit()
 
 # Splitting into training and test sets ----
-# Make test set with dates and actual sales
+# Make training set with dates and actual sales
 to_model <- full_data %>% 
   arrange(item_nbr, store_nbr, year, as.numeric(month)) %>% 
   group_by(item_nbr) %>% 
@@ -102,7 +104,7 @@ model_data <- train %>%
                                      data = .)$result[, -1]) %>%
   inner_join(to_model, .)
 
-# Do model matrices for test data (dummy variables etc.)
+# Do model matrices for testing data (dummy variables etc.)
 model_data <- test %>% 
   group_by(item_nbr) %>% 
   do(test = safely(model.matrix)(sales ~
@@ -116,7 +118,7 @@ model_data <- test %>%
   inner_join(model_data, .)
 
 # Modeling ----
-# Do cross validations to extract lamdas for the models using training set
+# Do cross validations to extract lamdas for the ridge models
 model_data <- model_data %>% 
   group_by(item_nbr) %>% 
   do(cv = safely(cv.glmnet)(pluck(.$training, 1),
@@ -150,13 +152,13 @@ ridge_models <- model_data %>%
                             alpha = 0)$result)
 
 # XGboost with grid search
-# Create cluster for parallel computing
+# Create cluster for parallel processing
 cluster <- new_cluster(2)
 cluster %>%
   cluster_library("purrr") %>%
   cluster_library("caret")
 
-time <- Sys.time() # 32 min
+time <- Sys.time() # ~15 min
 xgb_models <- model_data %>% 
   partition(cluster) %>%
   group_by(item_nbr) %>% 
@@ -168,17 +170,17 @@ xgb_models <- model_data %>%
                            tuneGrid = expand.grid(
                              # number of trees, higher if size of data is high
                              nrounds = c(5, 10, 15, 20),
-                             # smaller value prevents overfitting, 6; 0-inf
+                             # smaller value prevents overfitting, 0-inf
                              max_depth = c(6, 10, 15, 25),
-                             # smaller value prevents overfitting, 6; 0-inf
+                             # smaller value prevents overfitting, 0-inf
                              eta = c(0.01, 0.05, 0.1, 0.2, 0.5),
-                             # higher value = more conservative, 0; 0-inf
+                             # higher value = more conservative, 0-inf
                              gamma = c(0, 5),
-                             # 1; 0-1
+                             # 0-1
                              colsample_bytree = c(0.1, 0.3, 0.5, 0.8, 1),
-                             # higher value = more conservative, 1; 0-inf
+                             # higher value = more conservative, 0-inf
                              min_child_weight = 1,
-                             # smaller value prevents overfitting, 1; 0-1,
+                             # smaller value prevents overfitting, 0-1,
                              subsample = c(0.5, 1)),
                            allowParallel = TRUE)$result) %>% 
   collect()
@@ -188,6 +190,7 @@ xgb_models <- model_data %>%
 # Function to make predictions and calculate accuracy measures for both sets
 make_predictions <- function(model_df, lambda = FALSE){
   # Make predictions using the models (training set)
+  # Handle ridge models separately as they have different arguments
   if(lambda){
   result_data <- model_df %>% 
     inner_join(model_data, by = "item_nbr") %>% 
@@ -206,6 +209,7 @@ make_predictions <- function(model_df, lambda = FALSE){
                                             s = .$lambda,
                                           newx = pluck(.$test, 1))$result) %>% 
     inner_join(result_data, ., by = "item_nbr")
+  # Handle linear and XGBoost models
   } else {
     # Make predictions using the models (training set)
     result_data <- model_df %>% 
@@ -244,32 +248,30 @@ make_predictions <- function(model_df, lambda = FALSE){
                               use = "pairwise.complete.obs")$result ^ 2) %>% 
     inner_join(result_data, ., by = "item_nbr")
   
-  # Print R-squareds
+  # Print mean R-squareds
   print(paste("Mean training set R^2:",
               result_data$rsq_train %>% unlist() %>% mean() %>% substr(1, 5)))
   print(paste("Mean test set R^2:",
               result_data$rsq_test %>% unlist() %>% mean() %>% substr(1, 5)))
   
   return(result_data)
-  
-  # Keep only the needed variables
-  #result_data <- result_data %>% 
-  #  select(item_nbr, rsq_train, mape_train, rsq_test, mape_test)
 }
 
 # Function for plotting variable importances
 importance_plot <- list()
 make_importance_plots <- function(model_df, data_df, lambda = FALSE){
+  # Loop through all models
   for(i in 1:nrow(model_df)){
     # Calculate variable importances
     variable_importance <- varImp(model_df$model[[i]],
                                     lambda = data_df$lambda,
                                   scale = TRUE)
-    
+    # XGBoost variable importances are handled differently
     if(class(variable_importance) == "varImp.train"){
       variable_importance <- variable_importance$importance
     }
     
+    # Convert type while keeping names and arrange
     variable_importance <- variable_importance %>% 
       mutate(Variable = row.names(.),
              Importance = as.numeric(Overall)) %>%
@@ -281,13 +283,14 @@ make_importance_plots <- function(model_df, data_df, lambda = FALSE){
                              fixed = TRUE) %>%
                reorder(Importance)) 
     
+    # Produce plots into a list
     importance_plot[[i]] <- variable_importance %>% 
       ggplot(aes(x = Variable,
                  y = Importance)) +
       geom_col() +
       coord_flip() +
       ggtitle(paste0("Product ", model_df$item_nbr[[i]], ", ",
-                     "test set R^2 ", data_df$rsq_test[[i]] %>% substr(1, 5))) +
+                     "test R^2 ", data_df$rsq_test[[i]] %>% substr(1, 5))) +
       theme_light()
   }
   
@@ -299,19 +302,18 @@ pred_Linear <- make_predictions(linear_models)
 pred_Ridge <- make_predictions(ridge_models, lambda = TRUE)
 pred_XGB <- make_predictions(xgb_models)
 
-# Plot variable importances
-do.call(grid.arrange, list(grobs = make_importance_plots(linear_models, 
-                                                         pred_Linear),
-                           top = "Standardized variable importances, linear model"))
+# Collect variable importance plots to a list
+plots <- c(make_importance_plots(linear_models, pred_Linear),
+           make_importance_plots(ridge_models, pred_Ridge, lambda = TRUE),
+           make_importance_plots(xgb_models, pred_XGB))
 
-do.call(grid.arrange, list(grobs = make_importance_plots(ridge_models, 
-                                                         pred_Ridge,
-                                   lambda = TRUE),
-                           top = "Standardized variable importances, ridge model"))
-
-do.call(grid.arrange, list(grobs = make_importance_plots(xgb_models, 
-                                                         pred_XGB),
-                           top = "Standardized variable importances, XGBoost model"))
+# Plot variable importances together
+do.call(grid.arrange, list(
+  arrangeGrob(grobs = plots[1:3], top = "Linear models"),
+  arrangeGrob(grobs = plots[4:6], top = "Ridge models"), 
+  arrangeGrob(grobs = plots[7:9], top = "XGBoost models"), 
+  ncol = 3,
+  top = "Standardized variable importances"))
 
 # Unnest and aggregate actuals and predicitons to plottable format
 unnest_predictions <- function(data_df){
@@ -349,6 +351,7 @@ unnest_predictions <- function(data_df){
                       Prediction = sum(Prediction))) %>% 
     # Set negative predictions to zero
     mutate(Prediction = ifelse(Prediction < 0, 0, Prediction)) %>% 
+    # Filter last month since full data of that month is not available
     filter(Date != last(Date))
   
   return(unnested)
@@ -363,14 +366,17 @@ for(i in 1:length(ls()[startsWith(ls(), "pred_")])){
     geom_line(aes(y = Actual), size = 1) +
     geom_line(aes(y = Prediction), color = "#00BFC4", size = 1) +
     geom_vline(xintercept = split_date, color = "red", alpha = 0.5, size = 1) +
+    # Disable scientific notation for sales
     scale_y_continuous(labels = function(x) format(x, scientific = FALSE)) +
+    # Plot each product horizonttally
     facet_grid(rows = vars(item_nbr)) +
+    # Get titles from current environment variable names
     ggtitle(strsplit(ls()[startsWith(ls(), "pred_")][i], "_")[[1]][2]) +
     ylab("Sales (pcs)") +
     theme_light()
   }
 
-# Plot actuals vs predictions for each model and product
+# Plot actuals vs predictions for each model and product together
 do.call(grid.arrange, list(grobs = prediction_plot,
                            ncol = 3,
                            top = paste0("Predictions (blue) vs actuals ",

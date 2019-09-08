@@ -11,6 +11,7 @@ library(ggplot2) # plotting
 library(gridExtra) # plotting multiple plots together
 library(tibble) # add_column function
 library(multidplyr) # parallel dplyr
+library(parallel) # find out amount of cores
 
 # Reading & transforming the data ----
 # Select specific items
@@ -32,8 +33,10 @@ oil_df <- fread("oil.csv") %>%
   mutate(month = as.character(month))
 
 # Sales data
+sales_data <- fread("train.csv")
+
 # Select interval and aggregate to monthly
-sales_data <- fread("train.csv") %>% 
+sales_data <- sales_data %>% 
   lazy_dt() %>% 
   # Selected items only
   filter(item_nbr %in% items_to_be_plotted) %>% 
@@ -153,7 +156,7 @@ ridge_models <- model_data %>%
 
 # XGboost with grid search
 # Create cluster for parallel processing
-cluster <- new_cluster(2)
+cluster <- new_cluster(detectCores())
 cluster %>%
   cluster_library("purrr") %>%
   cluster_library("caret")
@@ -257,6 +260,11 @@ make_predictions <- function(model_df, lambda = FALSE){
   return(result_data)
 }
 
+# Make predictions for each model
+pred_Linear <- make_predictions(linear_models)
+pred_Ridge <- make_predictions(ridge_models, lambda = TRUE)
+pred_XGB <- make_predictions(xgb_models)
+
 # Function for plotting variable importances
 importance_plot <- list()
 make_importance_plots <- function(model_df, data_df, lambda = FALSE){
@@ -297,11 +305,6 @@ make_importance_plots <- function(model_df, data_df, lambda = FALSE){
   return(importance_plot)
 }
 
-# Make predictions for each model
-pred_Linear <- make_predictions(linear_models)
-pred_Ridge <- make_predictions(ridge_models, lambda = TRUE)
-pred_XGB <- make_predictions(xgb_models)
-
 # Collect variable importance plots to a list
 plots <- c(make_importance_plots(linear_models, pred_Linear),
            make_importance_plots(ridge_models, pred_Ridge, lambda = TRUE),
@@ -319,12 +322,13 @@ do.call(grid.arrange, list(
 unnest_predictions <- function(data_df){
   # Training set
   unnested <- data_df %>% 
-    select(-lambda) %>% 
+    # Carefully remove lambda column if it exists
+    select(-matches("lambda")) %>% 
     unnest(Date = year_month_train,
            Actual = sales_train,
            Prediction = predictions_train) %>% 
     rbind(data_df %>% 
-            select(-lambda) %>% 
+            select(-matches("lambda")) %>%
             unnest(Date = year_month_train,
                    Actual = sales_train,
                    Prediction = predictions_train)) %>% 
@@ -337,12 +341,12 @@ unnest_predictions <- function(data_df){
   # Test set
   unnested <- unnested %>% 
     rbind(data_df %>% 
-            select(-lambda) %>% 
+            select(-matches("lambda")) %>%
             unnest(Date = year_month_test,
                    Actual = sales_test,
                    Prediction = predictions_test) %>% 
             rbind(data_df %>% 
-                    select(-lambda) %>% 
+                    select(-matches("lambda")) %>%
                     unnest(Date = year_month_test,
                            Actual = sales_test,
                            Prediction = predictions_test)) %>% 
@@ -357,10 +361,13 @@ unnest_predictions <- function(data_df){
   return(unnested)
 }
 
+# Get the model names from the current environment
+model_names <- ls()[startsWith(ls(), "pred_")]
+
 # Loop for plotting actuals vs predictions
 prediction_plot <- list()
-for(i in 1:length(ls()[startsWith(ls(), "pred_")])){
-  data_df <- ls()[startsWith(ls(), "pred_")][i]
+for(i in 1:length(model_names)){
+  data_df <- model_names[i]
   prediction_plot[[i]] <- unnest_predictions(get(data_df)) %>% 
     ggplot(aes(x = Date)) +
     geom_line(aes(y = Actual), size = 1) +
